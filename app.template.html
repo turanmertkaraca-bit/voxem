@@ -573,7 +573,7 @@ async function startReceiving() {
   let stream;
   try {
     stream = await navigator.mediaDevices.getUserMedia({
-      video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 60 } },
+      video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 } },
       audio: false,
     });
   } catch (e) { $('recvStatus').textContent = 'Camera unavailable: ' + e.message; return; }
@@ -948,6 +948,21 @@ $('recvBtn').onclick = startReceiving;
 $('stopRecvBtn').onclick = stopReceiving;
 $('selftestBtn').onclick = runSelfTest;
 window.addEventListener('resize', () => { if (sendState.running) sizeCanvas(); });
+
+/* debug hook for the browser test harness (window.__voxem) */
+window.__voxem = {
+  decodeFrame, recvState, sendState,
+  PALETTE_HEX, GRID_OPTIONS,
+  grabFrame() {
+    const v = recvState.video;
+    const c = document.createElement('canvas');
+    c.width = v.videoWidth; c.height = v.videoHeight;
+    const x = c.getContext('2d');
+    x.drawImage(v, 0, 0);
+    const d = x.getImageData(0, 0, c.width, c.height);
+    return { data: Array.from(d.data), w: c.width, h: c.height };
+  },
+};
 </script>
 </body>
 </html>

@@ -104,6 +104,21 @@ function check(name, ok, extra) {
   }
 }
 
+/* T2c: the user-reported real-world case — 96/4 at ~4.8px/module (phone
+   screen ~10 device px/module, camera at arm's length filling ~40% of the
+   frame). This is the module-size edge where chroma bleed + blur used to
+   kill every frame; must decode now. */
+{
+  for (const [grid, colors, modulePx] of [[96, 4, 5], [168, 4, 5]]) {
+    const meta = S.makeMeta(grid, colors, 64 * 1024);
+    const opts = Object.assign({}, S.DEFAULTS, { meta, modulePx, blur: 0.3, noise: 3, decoder: 'real' });
+    const agg = S.runTrials(opts, 1280, 720, T2N);
+    console.log('\nT2c ' + grid + '/' + colors + ' @' + modulePx + 'px/module (user case): ' + agg.ok + '/' + T2N +
+      '  detect=' + agg.failDetect + ' sampling=' + agg.failSampling);
+    check('T2c ' + grid + '/' + colors + ' @' + modulePx + 'px/module decodes', agg.ok * 2 >= T2N, agg.ok + '/' + T2N);
+  }
+}
+
 /* T3: focus-blur cliff */
 console.log('\nT3 blur sweep (1280x720 fit, 168/4, modulePx 6 -> eff. 3.76 px/module, ' + T3N + ' trials/point):');
 for (const row of S.sweep('blur', 0, 1.0, T3PTS, Object.assign({}, S.DEFAULTS, { meta: S.makeMeta(168, 4, 64 * 1024), modulePx: 6, noise: 2 }), 1280, 720, T3N)) {

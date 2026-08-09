@@ -1,0 +1,15 @@
+{
+  "name": "voxem",
+  "version": "1.0.0",
+  "description": "Screen-to-camera file transfer in a single HTML file. No network, no pairing, no servers, no CDN — one device streams a file as a flickering color grid on its screen, another device's camera captures it and rebuilds the file.",
+  "main": "core.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "playwright": "^1.62.1"
+  }
+}

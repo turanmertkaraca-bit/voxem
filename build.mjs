@@ -190,6 +190,257 @@ const GRID_BLOCK_NEW = `  const locked = !!(state.lockCount > 0 && state.grid &&
   const cols = locked ? [state.colors] : [c1, c2];`;
 if (!PHYS.includes(GRID_BLOCK_OLD)) throw new Error('grids block not found');
 PHYS = PHYS.replace(GRID_BLOCK_OLD, GRID_BLOCK_NEW);
+// voxem: LUMA-PRIMARY classification. Real cameras subsample chroma (4:2:0
+// video, Bayer demosaic) — at module scale (~2-4px) chroma blends between
+// neighbors and hue becomes unreliable (the headless sim never modeled it,
+// so it decoded 100% while real hardware decoded ~0%). Luma survives at
+// full resolution, and every palette color has a distinct luma, so bin by
+// normalized luma instead of hue.
+const PROTOS_OLD = `function makePrototypes(colors, palHex) {
+  const names = PALETTES[colors].list;
+  const hexes = palHex || PALETTE_HEX[colors];
+  const protos = [];
+  for (let i = 0; i < names.length; i++) {
+    const [h, s, v] = hexToHsv(hexes[i]);
+    protos.push({ index: i, h, s, v, chromatic: s >= 0.2 });
+  }
+  return protos;
+}`;
+const PROTOS_NEW = `function makePrototypes(colors, palHex) {
+  const names = PALETTES[colors].list;
+  const hexes = palHex || PALETTE_HEX[colors];
+  const protos = [];
+  for (let i = 0; i < names.length; i++) {
+    const [h, s, v] = hexToHsv(hexes[i]);
+    const R = parseInt(hexes[i].slice(1, 3), 16), G = parseInt(hexes[i].slice(3, 5), 16), B = parseInt(hexes[i].slice(5, 7), 16);
+    protos.push({ index: i, h, s, v, chromatic: s >= 0.2, luma: 0.299 * R + 0.587 * G + 0.114 * B });
+  }
+  return protos;
+}`;
+if (!PHYS.includes(PROTOS_OLD)) throw new Error('makePrototypes block not found');
+PHYS = PHYS.replace(PROTOS_OLD, PROTOS_NEW);
+const CLASSIFY_OLD = `function classifyPixel(r, g, b, protos, cal) {
+  if (cal) {
+    const span = Math.max(16, cal.white - cal.black);
+    const f = 200 / span;
+    r = Math.min(255, r * f); g = Math.min(255, g * f); b = Math.min(255, b * f);
+  }
+  const [h, s, v] = rgb2hsv(r, g, b);
+  // dark pixels are BLACK regardless of saturation: the dark-grey data
+  // colour (#161616) plus a couple of units of sensor noise lands at
+  // s~0.3 — past the low-sat gate — where the chromatic branch rejects it
+  // (distance > 95 -> unknown -> frame lost). The exposure stretch already
+  // normalised brightness, so v < 0.30 is a safe black test in any palette
+  // (8-color's white sits at v~1).
+  if (v < 0.30) return 0;
+  if (s < 0.22) {
+    if (v < 0.45) return 0;
+    if (protos.length === 8) return v >= 0.85 ? 7 : -1;
+    return -1;
+  }
+  let best = -1, bestD = Infinity;
+  for (const p of protos) {
+    if (!p.chromatic) continue;
+    let dh = Math.abs(h - p.h);
+    if (dh > 180) dh = 360 - dh;
+    const d = dh + Math.abs(v - p.v) * 90 + Math.abs(s - p.s) * 50;
+    if (d < bestD) { bestD = d; best = p.index; }
+  }
+  if (bestD > 95) return -1;
+  return best;
+}`;
+const CLASSIFY_NEW = `function classifyPixel(r, g, b, protos, cal) {
+  // LUMA-PRIMARY classification. Real cameras subsample chroma (4:2:0
+  // video, Bayer demosaic) — at module scale (~2-4px) chroma blends
+  // between neighbors and hue becomes unreliable, but luma survives at
+  // full resolution. Every palette color has a distinct luma, so bin by
+  // luma normalized against the frame's own white/black refs (the 4 corner
+  // markers + white border ring, which are solid and chroma-robust).
+  let v = 0.299 * r + 0.587 * g + 0.114 * b;
+  if (cal) {
+    const span = Math.max(16, cal.white - cal.black);
+    v = ((v - cal.black) * 255) / span;
+  }
+  v = Math.max(0, Math.min(255, v));
+  let best = -1, bestD = Infinity;
+  for (const p of protos) {
+    const d = Math.abs(v - p.luma);
+    if (d < bestD) { bestD = d; best = p.index; }
+  }
+  return bestD <= 45 ? best : -1;
+}`;
+if (!PHYS.includes(CLASSIFY_OLD)) throw new Error('classifyPixel body not found');
+PHYS = PHYS.replace(CLASSIFY_OLD, CLASSIFY_NEW);
+// voxem: 4-color DATA palette is black/red/green/WHITE (luma 0/76/150/255)
+// instead of black/red/green/blue (0/76/150/29). Blue's luma is only 29
+// units from black — at ~3px/module with blur+noise the bins overlap and
+// whole frames die (colorsToPayload nulls on any unknown module). White
+// gives 76-105-unit gaps, robust to 4:2:0 chroma bleed. The corner MARKERS
+// stay black/red/green/blue (solid 8x8 blocks, chroma-safe) so marker
+// detection is unchanged.
+const PAL4_OLD = `  4: { black: 0xff000000, red: 0xff0000ff, green: 0xff00ff00, blue: 0xffff0000, list: ['black', 'red', 'green', 'blue'] },`;
+const PAL4_NEW = `  4: { black: 0xff000000, red: 0xff0000ff, green: 0xff00ff00, blue: 0xffff0000, white: 0xffffffff, list: ['black', 'red', 'green', 'white'] },`;
+if (!PHYS.includes(PAL4_OLD)) throw new Error('palette-4 block not found');
+PHYS = PHYS.replace(PAL4_OLD, PAL4_NEW);
+const PALHEX4_OLD = `  4: ['#000000', '#ff0000', '#00ff00', '#0000ff'],`;
+const PALHEX4_NEW = `  4: ['#000000', '#ff0000', '#00ff00', '#ffffff'],`;
+if (!PHYS.includes(PALHEX4_OLD)) throw new Error('palette-hex-4 block not found');
+PHYS = PHYS.replace(PALHEX4_OLD, PALHEX4_NEW);
+// voxem: 9-point majority sampling. At 3-5px/module the 5-point pass left
+// boundary-blend modules unresolved (any single unknown killed the frame
+// in colorsToPayload) and 3-of-5 majors were wrong on blends. 9 points
+// (±0.28 module offsets) make the majority stable; ties resolve to the
+// center sample; the last resort is the majority leader. Wrong guesses
+// just fail CRC — a clean frame is never dropped for lack of a majority.
+const SAMPLE9_OLD = `function sampleGrid(img, H, GRID, lut) {
+  const { data, w, h } = img;
+  const idx = new Uint8Array(GRID * GRID).fill(255);
+  const OFF = [[0, 0], [0.15, 0], [-0.15, 0], [0, 0.15], [0, -0.15]];
+  for (let my = 0; my < GRID; my++) {
+    for (let mx = 0; mx < GRID; mx++) {
+      const votes = [0, 0, 0, 0, 0, 0, 0, 0];
+      let n = 0;
+      for (let s = 0; s < 5; s++) {
+        const [ix, iy] = applyH(H, mx + 0.5 + OFF[s][0], my + 0.5 + OFF[s][1]);
+        const xi = Math.round(ix), yi = Math.round(iy);
+        if (xi < 0 || yi < 0 || xi >= w || yi >= h) continue;
+        const pi = (yi * w + xi) * 4;
+        const c = lut[((data[pi] >> 3) << 10) | ((data[pi + 1] >> 3) << 5) | (data[pi + 2] >> 3)];
+        if (c !== 255) { votes[c]++; n++; }
+      }
+      if (n < 3) continue;
+      let best = -1, bc = 0;
+      for (let c = 0; c < votes.length; c++) if (votes[c] > bc) { bc = votes[c]; best = c; }
+      if (bc >= 3) idx[my * GRID + mx] = best;
+    }
+  }
+  for (let my = 0; my < GRID; my++) {
+    for (let mx = 0; mx < GRID; mx++) {
+      const i = my * GRID + mx;
+      if (idx[i] !== 255) continue;
+      const [ix, iy] = applyH(H, mx + 0.5, my + 0.5);
+      const xi = Math.round(ix), yi = Math.round(iy);
+      if (xi < 0 || yi < 0 || xi >= w || yi >= h) continue;
+      const pi = (yi * w + xi) * 4;
+      const c = lut[((data[pi] >> 3) << 10) | ((data[pi + 1] >> 3) << 5) | (data[pi + 2] >> 3)];
+      if (c !== 255) idx[i] = c;
+    }
+  }
+  return idx;
+}`;
+const SAMPLE9_NEW = `function sampleGrid(img, H, GRID, lut) {
+  const { data, w, h } = img;
+  const idx = new Uint8Array(GRID * GRID).fill(255);
+  const OFF = [[0, 0], [0.28, 0], [-0.28, 0], [0, 0.28], [0, -0.28], [0.2, 0.2], [-0.2, -0.2], [0.2, -0.2], [-0.2, 0.2]];
+  for (let my = 0; my < GRID; my++) {
+    for (let mx = 0; mx < GRID; mx++) {
+      const votes = [0, 0, 0, 0, 0, 0, 0, 0];
+      let n = 0, center = 255;
+      for (let s = 0; s < 9; s++) {
+        const [ix, iy] = applyH(H, mx + 0.5 + OFF[s][0], my + 0.5 + OFF[s][1]);
+        const xi = Math.round(ix), yi = Math.round(iy);
+        if (xi < 0 || yi < 0 || xi >= w || yi >= h) continue;
+        const pi = (yi * w + xi) * 4;
+        const c = lut[((data[pi] >> 3) << 10) | ((data[pi + 1] >> 3) << 5) | (data[pi + 2] >> 3)];
+        if (c !== 255) { votes[c]++; n++; }
+        if (s === 0) center = c;
+      }
+      let best = -1, bc = 0;
+      for (let c = 0; c < votes.length; c++) if (votes[c] > bc) { bc = votes[c]; best = c; }
+      idx[my * GRID + mx] = bc >= 5 ? best : (center !== 255 ? center : (best >= 0 ? best : 0));
+    }
+  }
+  return idx;
+}`;
+if (!PHYS.includes(SAMPLE9_OLD)) throw new Error('sampleGrid block not found');
+PHYS = PHYS.replace(SAMPLE9_OLD, SAMPLE9_NEW);
+// voxem: per-channel gain correction from the chromatic MARKERS. A camera
+// white-balance tint shifts each color's luma non-uniformly (a warm tint
+// drops white to ~146 and red to ~175, crossing the fixed luma bins and
+// scrambling luma-only classification). The red/green/blue corner markers
+// are KNOWN colors: measure their rendered RGB, derive per-channel gains,
+// and gain-correct pixels before classifying. Tints (and plain exposure)
+// become invisible to the classifier.
+const GAINS_OLD = `function classifyLUT(protos, cal) {
+  const lut = new Uint8Array(32768).fill(255);
+  for (let i = 0; i < 32768; i++) {
+    const r = ((i >>> 10) & 31) * 8 + 4;
+    const g = ((i >>> 5) & 31) * 8 + 4;
+    const b = (i & 31) * 8 + 4;
+    lut[i] = classifyPixel(r, g, b, protos, cal);
+  }
+  return lut;
+}`;
+const GAINS_NEW = `function markerGains(img, m, kx, ky) {
+  const { data, w, h } = img;
+  const side = ((m[0].side + m[1].side + m[2].side + m[3].side) / 4) * kx;
+  const R = Math.max(1, Math.floor(side * 0.25));
+  const read = (i) => {
+    const cx0 = m[i].cx * kx, cy0 = m[i].cy * ky;
+    let r = 0, g = 0, b = 0, n = 0;
+    for (let dy = -R; dy <= R; dy++) for (let dx = -R; dx <= R; dx++) {
+      const x = Math.round(cx0 + dx), y = Math.round(cy0 + dy);
+      if (x < 1 || y < 1 || x >= w - 1 || y >= h - 1) continue;
+      const o = (y * w + x) * 4;
+      r += data[o]; g += data[o + 1]; b += data[o + 2]; n++;
+    }
+    return n < 3 ? null : [r / n, g / n, b / n];
+  };
+  const red = read(1), green = read(2), br = read(3);
+  if (!red || !green || !br) return null;
+  const san = (v) => (isFinite(v) && v > 0.3 && v < 3 ? v : 1);
+  return [san(255 / red[0]), san(255 / green[1]), san(255 / br[2])];
+}
+
+function classifyLUT(protos, cal, gains) {
+  const lut = new Uint8Array(32768).fill(255);
+  const g = gains || [1, 1, 1];
+  for (let i = 0; i < 32768; i++) {
+    let r = (((i >>> 10) & 31) * 8 + 4) * g[0];
+    let gg = (((i >>> 5) & 31) * 8 + 4) * g[1];
+    let b = ((i & 31) * 8 + 4) * g[2];
+    if (r > 255) r = 255; if (gg > 255) gg = 255; if (b > 255) b = 255;
+    lut[i] = classifyPixel(r, gg, b, protos, cal);
+  }
+  return lut;
+}`;
+if (!PHYS.includes(GAINS_OLD)) throw new Error('classifyLUT block not found');
+PHYS = PHYS.replace(GAINS_OLD, GAINS_NEW);
+const LUTKEY_OLD = `  const lutKey = (state.palHex ? state.palHex.join(',') : '') + '|' +
+    (state.cal ? Math.round(state.cal.white / 4) + '/' + Math.round(state.cal.black / 4) : '-');
+  if (state._lutKey !== lutKey) {
+    state._lutKey = lutKey;
+    state._luts = {};
+    for (const c of [4, 8]) state._luts[c] = classifyLUT(makePrototypes(c, state.palHex), state.cal);
+  }`;
+const LUTKEY_NEW = `  const gains = markers ? (markerGains(img, markers.markers, kx, ky) || [1, 1, 1]) : [1, 1, 1];
+  // when marker gains are active they already normalize exposure AND tint
+  // to the ideal palette (markers are known colors) — the cal luma
+  // normalization would double-correct (it is measured on the RAW frame).
+  const hasGains = gains[0] !== 1 || gains[1] !== 1 || gains[2] !== 1;
+  const lutKey = (state.palHex ? state.palHex.join(',') : '') + '|' +
+    (state.cal ? Math.round(state.cal.white / 4) + '/' + Math.round(state.cal.black / 4) : '-') + '|' +
+    gains[0].toFixed(2) + '/' + gains[1].toFixed(2) + '/' + gains[2].toFixed(2);
+  if (state._lutKey !== lutKey) {
+    state._lutKey = lutKey;
+    state._luts = {};
+    for (const c of [4, 8]) state._luts[c] = classifyLUT(makePrototypes(c, state.palHex), hasGains ? null : state.cal, gains);
+  }`;
+if (!PHYS.includes(LUTKEY_OLD)) throw new Error('lutKey block not found');
+PHYS = PHYS.replace(LUTKEY_OLD, LUTKEY_NEW);
+// voxem: failure diagnostics
+const FAILINFO_OLD = `  state.lastFail = 'sampling';`;
+const FAILINFO_NEW = `  state.lastFail = 'sampling';
+  state.failInfo = {
+    locked: !!state.lockCount, lockCount: state.lockCount,
+    est: est, tried: Object.keys(tried).join(','),
+    markers: !!markers, canvas: !!canvas, refined: !!refined,
+    g1: g1, c1: c1,
+    cal: state.cal ? Math.round(state.cal.white) + '/' + Math.round(state.cal.black) : '-',
+    gains: gains && gains.map((v) => +v.toFixed(2)).join('/'),
+  };`;
+if (!PHYS.includes(FAILINFO_OLD)) throw new Error('failInfo anchor not found');
+PHYS = PHYS.replace(FAILINFO_OLD, FAILINFO_NEW, 1);
 
 /* ---------- assemble ---------- */
 const out = TPL

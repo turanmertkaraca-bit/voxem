@@ -12,5 +12,5 @@ function section(start, end) {
   return js.slice(i0, i1);
 }
 const core = section('LT-CORE-BEGIN', 'LT-CORE-END') + '\n' + section('wire format v3 + CRC32', 'PHYSICAL-CORE-BEGIN') + '\n' + section('PHYSICAL-CORE-BEGIN', 'PHYSICAL-CORE-END');
-fs.writeFileSync('core.js', core);
+fs.writeFileSync(path.join(__dirname, 'core.js'), core);
 console.log('wrote core.js (' + core.length + ' bytes)');

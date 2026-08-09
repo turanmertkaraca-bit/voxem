@@ -243,6 +243,13 @@ var LumenSim = (function () {
     }
     const blur = opts.blur || 0;
     if (blur > 0.05) gaussBlur(img, blur);
+    // 4:2:0 chroma subsampling — REAL cameras and video pipelines store
+    // chroma at quarter resolution. At module scale (~2-4px/module) the
+    // chroma interpolation blends adjacent module colors, which corrupts
+    // hue-based classification. The headless sim never modeled this, which
+    // is why it decoded 100% while real hardware decoded ~0%. The decoder
+    // must classify by luma (full-res) to survive it.
+    chroma420(img);
     const noise = opts.noise || 0;
     const gain = opts.gain || 1;
     const tR = opts.tintR || 1, tG = opts.tintG || 1, tB = opts.tintB || 1;
@@ -255,6 +262,43 @@ var LumenSim = (function () {
       d[i + 2] = Math.min(255, Math.max(0, (d[i + 2] + (lut ? lut[ni++ & 4095] : 0)) * gain * tB));
     }
     return img;
+  }
+
+  /* 4:2:0 chroma subsampling: per-pixel luma is kept, chroma (U/V) is
+     averaged per 2x2 block and bilinearly upsampled back — exactly what a
+     YUV420 video path does. */
+  function chroma420(img) {
+    const { data, w, h } = img;
+    const w2 = w >> 1, h2 = h >> 1;
+    const cu = new Float64Array(w2 * h2), cv = new Float64Array(w2 * h2);
+    for (let by = 0; by < h2; by++) {
+      for (let bx = 0; bx < w2; bx++) {
+        let r = 0, g = 0, b = 0;
+        for (let dy = 0; dy < 2; dy++) {
+          for (let dx = 0; dx < 2; dx++) {
+            const o = ((by * 2 + dy) * w + bx * 2 + dx) * 4;
+            r += data[o]; g += data[o + 1]; b += data[o + 2];
+          }
+        }
+        r /= 4; g /= 4; b /= 4;
+        cu[by * w2 + bx] = -0.169 * r - 0.331 * g + 0.5 * b + 128;
+        cv[by * w2 + bx] = 0.5 * r - 0.419 * g - 0.081 * b + 128;
+      }
+    }
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        const bx = Math.min(w2 - 1, x >> 1), by = Math.min(h2 - 1, y >> 1);
+        const u = cu[by * w2 + bx], v = cv[by * w2 + bx];
+        const o = (y * w + x) * 4;
+        const Y = 0.299 * data[o] + 0.587 * data[o + 1] + 0.114 * data[o + 2];
+        const r = Y + 1.402 * (v - 128);
+        const g = Y - 0.344 * (u - 128) - 0.714 * (v - 128);
+        const b = Y + 1.772 * (u - 128);
+        data[o] = Math.min(255, Math.max(0, r));
+        data[o + 1] = Math.min(255, Math.max(0, g));
+        data[o + 2] = Math.min(255, Math.max(0, b));
+      }
+    }
   }
 
   /* -------- receiver side: the REAL decoder, wired exactly like index.html -------- */
