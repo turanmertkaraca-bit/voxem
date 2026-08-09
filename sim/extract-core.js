@@ -1,5 +1,6 @@
 const fs = require('fs');
-const html = fs.readFileSync('../index.html', 'utf8');
+const path = require('path');
+const html = fs.readFileSync(path.join(__dirname, '..', 'index.html'), 'utf8');
 const m = html.match(/<script type="module">([\s\S]*?)<\/script>/);
 if (!m) { console.error('no module script found'); process.exit(1); }
 const js = m[1];
