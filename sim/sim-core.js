@@ -553,8 +553,8 @@ var LumenSim = (function () {
         decoder = createLtDecoder();
         unique = new Set();
       },
-      step(opts, camW, camH) {
-        const seed = (simRand() * 4294967296) >>> 0;
+      step(opts, camW, camH, seed) {
+        if (seed === undefined) seed = (simRand() * 4294967296) >>> 0;
         const fr = genFrame(meta, meta.blocks, seed);
         const screen = makeScreen(fr.buf, fr.S, opts.modulePx);
         const cam = capture(screen, opts, camW, camH);

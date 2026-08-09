@@ -11,8 +11,8 @@ import { fileURLToPath } from 'node:url';
 
 const DIR = path.dirname(fileURLToPath(import.meta.url));
 
-const CORE = fs.readFileSync(path.join(DIR, '..', 'lumen', 'lumen-sim', 'core.js'), 'utf8');
-const TPL = fs.readFileSync(path.join(DIR, 'app.template.html'), 'utf8');
+const CORE = fs.readFileSync(path.join(DIR, '..', 'lumen', 'lumen-sim', 'core.js'), 'utf8').replace(/\r\n/g, '\n');
+const TPL = fs.readFileSync(path.join(DIR, 'app.template.html'), 'utf8').replace(/\r\n/g, '\n');
 
 function section(start, end) {
   let i0 = CORE.indexOf(start);
@@ -164,6 +164,32 @@ const jq0 = PHYS.indexOf('if (!markers) {');
 const jq1 = PHYS.indexOf('// refine the white level');
 if (jq0 < 0 || jq1 < 0) throw new Error('jsQR branch anchors not found');
 PHYS = PHYS.slice(0, jq0) + PHYS.slice(jq1);
+// voxem: four grid sizes (96/128 easy-read modes added)
+PHYS = PHYS.replace(
+  'const GRID_OPTIONS = [168, 224];',
+  'const GRID_OPTIONS = [96, 128, 168, 224];'
+);
+// voxem: multi-grid acquisition — try every grid size, est-nearest first
+const GRID_BLOCK_OLD = `  const locked = !!(state.lockCount > 0 && state.grid && state.colors);
+  const g1 = state.grid || est || 168;
+  const g2 = g1 === 168 ? 224 : 168;
+  const c1 = markers ? markers.colors : (state.colors || 4);
+  const c2 = c1 === 4 ? 8 : 4;
+  const grids = locked ? [state.grid] : [g1, g2];
+  const cols = locked ? [state.colors] : [c1, c2];`;
+const GRID_BLOCK_NEW = `  const locked = !!(state.lockCount > 0 && state.grid && state.colors);
+  let grids;
+  if (locked) grids = [state.grid];
+  else {
+    grids = GRID_OPTIONS.slice();
+    if (est) grids.sort((a, b) => Math.abs(a - est) - Math.abs(b - est));
+  }
+  const g1 = grids[0];
+  const c1 = markers ? markers.colors : (state.colors || 4);
+  const c2 = c1 === 4 ? 8 : 4;
+  const cols = locked ? [state.colors] : [c1, c2];`;
+if (!PHYS.includes(GRID_BLOCK_OLD)) throw new Error('grids block not found');
+PHYS = PHYS.replace(GRID_BLOCK_OLD, GRID_BLOCK_NEW);
 
 /* ---------- assemble ---------- */
 const out = TPL

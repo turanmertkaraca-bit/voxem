@@ -91,6 +91,19 @@ function check(name, ok, extra) {
   check('T2 M=8 makes 224/8 decodable', agg.ok * 2 >= T2N, agg.ok + '/' + T2N);
 }
 
+/* T2b: the easy-read grids (96/128, 4 colors) must decode at phone-like
+   geometry — these are the "it has to work" modes for first-time users. */
+{
+  for (const [grid, colors] of [[96, 4], [128, 4]]) {
+    const meta = S.makeMeta(grid, colors, 64 * 1024);
+    const opts = Object.assign({}, S.DEFAULTS, { meta, modulePx: 6, blur: 0.3, noise: 3, decoder: 'real' });
+    const agg = S.runTrials(opts, 1280, 720, T2N);
+    console.log('\nT2b ' + grid + '/' + colors + ' @1280x720 (blur 0.3, noise 3): ' + agg.ok + '/' + T2N +
+      '  detect=' + agg.failDetect + ' sampling=' + agg.failSampling);
+    check('T2b ' + grid + '/' + colors + ' easy-read grid decodes', agg.ok * 2 >= T2N, agg.ok + '/' + T2N);
+  }
+}
+
 /* T3: focus-blur cliff */
 console.log('\nT3 blur sweep (1280x720 fit, 168/4, modulePx 6 -> eff. 3.76 px/module, ' + T3N + ' trials/point):');
 for (const row of S.sweep('blur', 0, 1.0, T3PTS, Object.assign({}, S.DEFAULTS, { meta: S.makeMeta(168, 4, 64 * 1024), modulePx: 6, noise: 2 }), 1280, 720, T3N)) {
@@ -99,16 +112,26 @@ for (const row of S.sweep('blur', 0, 1.0, T3PTS, Object.assign({}, S.DEFAULTS, {
     bar.padEnd(30) + '  detect=' + row.failDetect + ' sampling=' + row.failSampling + ' ' + row.ms.toFixed(0) + 'ms');
 }
 
-/* T4: stream + LT pool completes */
+/* T4: stream + LT pool completes. Uses SYSTEMATIC seeds for the first k
+   frames (exactly what the app's sender does) plus random repairs — the
+   systematic pass guarantees every block arrives as a degree-1 symbol, so
+   the pool always solves. RNG is pinned for determinism. */
 {
   const meta = S.makeMeta(168, 4, T4SIZE);
   const opts = Object.assign({}, S.DEFAULTS, { meta, modulePx: 6, blur: 0.2, noise: 2, decoder: 'fast' });
   const st = S.makeStream();
   st.begin(opts);
   const total = T4N;
-  for (let i = 0; i < total; i++) st.step(opts, 1280, 720);
-  check('T4 stream LT pool solved ' + st.solved + '/' + meta.k + ' from ' + st.unique + ' unique of ' + total + ' frames',
-    st.solved === meta.k, st.solved + '/' + meta.k + ' (' + st.unique + ' unique)');
+  const k = meta.k;
+  const sysSeeds = [];
+  for (let i = 1; i <= k; i++) sysSeeds.push(sb.systematicSeedFor(k, i));
+  for (let i = 0; i < total; i++) {
+    S.setSimSeed(0x5EED + i * 0x9E3779B9);
+    if (i < k) st.step(opts, 1280, 720, sysSeeds[i]);
+    else st.step(opts, 1280, 720);
+  }
+  check('T4 stream LT pool solved ' + st.solved + '/' + k + ' from ' + st.unique + ' unique of ' + total + ' frames',
+    st.solved === k, st.solved + '/' + k + ' (' + st.unique + ' unique)');
 }
 
 /* T5: timing */

@@ -282,7 +282,7 @@ const BORDER = 4;
 const MARKER = 8;               // 8x8-module corner markers (was 4): reliable
                                 // detection at the 640px working scale; the
                                 // 224 grid only decodes with the bigger markers
-const GRID_OPTIONS = [168, 224];
+const GRID_OPTIONS = [96, 128, 168, 224];
 
 const PALETTES = {
   // NOTE: index 0 stays PURE BLACK. A dark-grey index 0 (#6 idea) was
@@ -1375,11 +1375,15 @@ function decodeFrame(img, state, deadline) {
   // 4 combos x 7 homographies. Eight consecutive failures re-open the full
   // search, so a mid-stream format change still recovers.
   const locked = !!(state.lockCount > 0 && state.grid && state.colors);
-  const g1 = state.grid || est || 168;
-  const g2 = g1 === 168 ? 224 : 168;
+  let grids;
+  if (locked) grids = [state.grid];
+  else {
+    grids = GRID_OPTIONS.slice();
+    if (est) grids.sort((a, b) => Math.abs(a - est) - Math.abs(b - est));
+  }
+  const g1 = grids[0];
   const c1 = markers ? markers.colors : (state.colors || 4);
   const c2 = c1 === 4 ? 8 : 4;
-  const grids = locked ? [state.grid] : [g1, g2];
   const cols = locked ? [state.colors] : [c1, c2];
   // LUTs cost ~32k classifications each — build once, rebuild only when the
   // palette or the exposure calibration changes. §1.7: quantise the cal key
