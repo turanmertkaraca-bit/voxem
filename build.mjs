@@ -354,13 +354,12 @@ const SAMPLE9_NEW = `function sampleGrid(img, H, GRID, lut) {
 }`;
 if (!PHYS.includes(SAMPLE9_OLD)) throw new Error('sampleGrid block not found');
 PHYS = PHYS.replace(SAMPLE9_OLD, SAMPLE9_NEW);
-// voxem: per-channel gain correction from the chromatic MARKERS. A camera
-// white-balance tint shifts each color's luma non-uniformly (a warm tint
-// drops white to ~146 and red to ~175, crossing the fixed luma bins and
-// scrambling luma-only classification). The red/green/blue corner markers
-// are KNOWN colors: measure their rendered RGB, derive per-channel gains,
-// and gain-correct pixels before classifying. Tints (and plain exposure)
-// become invisible to the classifier.
+// voxem: LUMA CALIBRATION CURVE from the 4 corner MARKERS. The markers are
+// known colors (black/red/green/blue = lumas 0/76/150/29), so the frame's
+// own measured marker lumas give a piecewise-linear map measured->ideal
+// luma. This handles black lift (AGC on a bright grid), gamma, tint, and
+// channel clipping — the affine per-channel-gain model breaks whenever a
+// channel clips, which is exactly when a bright grid is on screen.
 const GAINS_OLD = `function classifyLUT(protos, cal) {
   const lut = new Uint8Array(32768).fill(255);
   for (let i = 0; i < 32768; i++) {
@@ -371,11 +370,12 @@ const GAINS_OLD = `function classifyLUT(protos, cal) {
   }
   return lut;
 }`;
-const GAINS_NEW = `function markerGains(img, m, kx, ky) {
+const GAINS_NEW = `function markerLumas(img, m, kx, ky) {
   const { data, w, h } = img;
   const side = ((m[0].side + m[1].side + m[2].side + m[3].side) / 4) * kx;
   const R = Math.max(1, Math.floor(side * 0.25));
-  const read = (i) => {
+  const out = [];
+  for (let i = 0; i < 4; i++) {
     const cx0 = m[i].cx * kx, cy0 = m[i].cy * ky;
     let r = 0, g = 0, b = 0, n = 0;
     for (let dy = -R; dy <= R; dy++) for (let dx = -R; dx <= R; dx++) {
@@ -384,23 +384,112 @@ const GAINS_NEW = `function markerGains(img, m, kx, ky) {
       const o = (y * w + x) * 4;
       r += data[o]; g += data[o + 1]; b += data[o + 2]; n++;
     }
-    return n < 3 ? null : [r / n, g / n, b / n];
-  };
-  const red = read(1), green = read(2), br = read(3);
-  if (!red || !green || !br) return null;
-  const san = (v) => (isFinite(v) && v > 0.3 && v < 3 ? v : 1);
-  return [san(255 / red[0]), san(255 / green[1]), san(255 / br[2])];
+    if (n < 3) return null;
+    out.push((0.299 * r + 0.587 * g + 0.114 * b) / n);
+  }
+  return out; // [black, red, green, blue] marker lumas
 }
 
-function classifyLUT(protos, cal, gains) {
+/* piecewise-linear map: (measured luma -> ideal luma) through the 4 marker
+   lumas + white (measured from the border ring, or assumed 255). Sorted by
+   measured; collapsed refs -> null. */
+function lumaCurveFrom(lumas, whiteLuma) {
+  const IDEAL = [0, 76, 150, 29]; // black, red, green, blue ideal lumas
+  const pts = lumas.map((m, i) => [m, IDEAL[i]]);
+  pts.push([whiteLuma == null ? 255 : whiteLuma, 255]);
+  pts.sort((a, b) => a[0] - b[0]);
+  for (let i = 1; i < pts.length; i++) {
+    if (pts[i][0] - pts[i - 1][0] < 4) return null;
+  }
+  return pts;
+}
+
+/* white reference from the border ring, estimated from the marker blob
+   geometry: the grid corner sits (side/2)*sqrt(2) diagonally out from the
+   marker centroid; sample ~1.5 modules beyond it along the same diagonal
+   (the border ring is 4 modules wide, so this is tolerant of +-1-2px blob
+   quantization). Runs before refined corners exist, so centroids only. */
+function borderWhiteApprox(img, m, kx, ky) {
+  const { data, w, h } = img;
+  const side = ((m[0].side + m[1].side + m[2].side + m[3].side) / 4) * kx;
+  const mp = side / MARKER;
+  let ccx = 0, ccy = 0;
+  for (let i = 0; i < 4; i++) { ccx += m[i].cx * kx; ccy += m[i].cy * ky; }
+  ccx /= 4; ccy /= 4;
+  for (let i = 0; i < 4; i += 3) { // TL and BL corners
+    const cx0 = m[i].cx * kx, cy0 = m[i].cy * ky;
+    let dx = cx0 - ccx, dy = cy0 - ccy;
+    const ln = Math.hypot(dx, dy) || 1;
+    dx /= ln; dy /= ln;
+    const gx = cx0 - dx * side * 0.7071, gy = cy0 - dy * side * 0.7071;
+    const bx = Math.round(gx - dx * 1.5 * mp), by = Math.round(gy - dy * 1.5 * mp);
+    if (bx < 2 || by < 2 || bx >= w - 2 || by >= h - 2) continue;
+    const o = (by * w + bx) * 4;
+    return 0.299 * data[o] + 0.587 * data[o + 1] + 0.114 * data[o + 2];
+  }
+  return null;
+}
+
+function interpLuma(curve, v) {
+  if (v <= curve[0][0]) return curve[0][1];
+  for (let i = 1; i < curve.length; i++) {
+    if (v <= curve[i][0]) {
+      const x0 = curve[i - 1][0], y0 = curve[i - 1][1];
+      const x1 = curve[i][0], y1 = curve[i][1];
+      return y0 + (y1 - y0) * (v - x0) / (x1 - x0);
+    }
+  }
+  return curve[curve.length - 1][1];
+}
+
+function classifyLUT(protos, cal) {
   const lut = new Uint8Array(32768).fill(255);
-  const g = gains || [1, 1, 1];
+  const curve = cal && Array.isArray(cal) ? cal : null;
   for (let i = 0; i < 32768; i++) {
-    let r = (((i >>> 10) & 31) * 8 + 4) * g[0];
-    let gg = (((i >>> 5) & 31) * 8 + 4) * g[1];
-    let b = ((i & 31) * 8 + 4) * g[2];
-    if (r > 255) r = 255; if (gg > 255) gg = 255; if (b > 255) b = 255;
-    lut[i] = classifyPixel(r, gg, b, protos, cal);
+    const r = ((i >>> 10) & 31) * 8 + 4;
+    const g = ((i >>> 5) & 31) * 8 + 4;
+    const b = (i & 31) * 8 + 4;
+    let v = 0.299 * r + 0.587 * g + 0.114 * b;
+    if (curve) v = interpLuma(curve, v);
+    else if (cal && cal.white !== undefined) {
+      const span = Math.max(16, cal.white - cal.black);
+      v = Math.max(0, Math.min(255, (v - cal.black) * 255 / span));
+    }
+    let lc = -1, ld = Infinity;
+    for (const p of protos) {
+      const d = Math.abs(v - p.luma);
+      if (d < ld) { ld = d; lc = p.index; }
+    }
+    if (ld > 45) { lut[i] = 255; continue; }
+    // HUE GATE (chromatic classes only): 4:2:0 chroma bleed turns a pixel
+    // at a red-green block boundary into ~(90,90,0) — mid-luma (lands in
+    // the green bin) with a yellow-ish hue. Luma alone cannot see the lie.
+    // Clean chromatic pixels agree on luma AND hue; blended ones (no
+    // chromatic proto within 40 deg of the measured hue) abstain, and the
+    // majority vote is decided by clean samples. White/black are luma-only
+    // decisions (a warm tint legitimately gives white an orange hue).
+    const pc = protos[lc];
+    if (pc && pc.chromatic) {
+      const mx = Math.max(r, g, b), mn = Math.min(r, g, b);
+      const vv = mx / 255, ss = mx > 0 ? (mx - mn) / mx : 0;
+      if (ss >= 0.25 && vv >= 0.3) {
+        let hh;
+        if (mx === r) hh = ((g - b) / (mx - mn)) % 6;
+        else if (mx === g) hh = (b - r) / (mx - mn) + 2;
+        else hh = (r - g) / (mx - mn) + 4;
+        hh *= 60;
+        if (hh < 0) hh += 360;
+        let hc = -1, hd = Infinity;
+        for (const p of protos) {
+          if (!p.chromatic) continue;
+          let dh = Math.abs(hh - p.h);
+          if (dh > 180) dh = 360 - dh;
+          if (dh < hd) { hd = dh; hc = p.index; }
+        }
+        if (hd > 40 || hc !== lc) { lut[i] = 255; continue; }
+      }
+    }
+    lut[i] = lc;
   }
   return lut;
 }`;
@@ -413,18 +502,21 @@ const LUTKEY_OLD = `  const lutKey = (state.palHex ? state.palHex.join(',') : ''
     state._luts = {};
     for (const c of [4, 8]) state._luts[c] = classifyLUT(makePrototypes(c, state.palHex), state.cal);
   }`;
-const LUTKEY_NEW = `  const gains = markers ? (markerGains(img, markers.markers, kx, ky) || [1, 1, 1]) : [1, 1, 1];
-  // when marker gains are active they already normalize exposure AND tint
-  // to the ideal palette (markers are known colors) — the cal luma
-  // normalization would double-correct (it is measured on the RAW frame).
-  const hasGains = gains[0] !== 1 || gains[1] !== 1 || gains[2] !== 1;
+const LUTKEY_NEW = `  let curve = null;
+  if (markers) {
+    const lumas = markerLumas(img, markers.markers, kx, ky);
+    if (lumas) {
+      const wl = borderWhiteApprox(img, markers.markers, kx, ky);
+      curve = lumaCurveFrom(lumas, wl);
+    }
+  }
   const lutKey = (state.palHex ? state.palHex.join(',') : '') + '|' +
-    (state.cal ? Math.round(state.cal.white / 4) + '/' + Math.round(state.cal.black / 4) : '-') + '|' +
-    gains[0].toFixed(2) + '/' + gains[1].toFixed(2) + '/' + gains[2].toFixed(2);
+    (curve ? curve.map((p) => p[0].toFixed(0)).join('/') : '-') + '|' +
+    (state.cal ? Math.round(state.cal.white / 4) + '/' + Math.round(state.cal.black / 4) : '-');
   if (state._lutKey !== lutKey) {
     state._lutKey = lutKey;
     state._luts = {};
-    for (const c of [4, 8]) state._luts[c] = classifyLUT(makePrototypes(c, state.palHex), hasGains ? null : state.cal, gains);
+    for (const c of [4, 8]) state._luts[c] = classifyLUT(makePrototypes(c, state.palHex), curve || state.cal);
   }`;
 if (!PHYS.includes(LUTKEY_OLD)) throw new Error('lutKey block not found');
 PHYS = PHYS.replace(LUTKEY_OLD, LUTKEY_NEW);
@@ -436,8 +528,8 @@ const FAILINFO_NEW = `  state.lastFail = 'sampling';
     est: est, tried: Object.keys(tried).join(','),
     markers: !!markers, canvas: !!canvas, refined: !!refined,
     g1: g1, c1: c1,
+    curve: curve ? curve.map((p) => p[0].toFixed(0)).join('/') : '-',
     cal: state.cal ? Math.round(state.cal.white) + '/' + Math.round(state.cal.black) : '-',
-    gains: gains && gains.map((v) => +v.toFixed(2)).join('/'),
   };`;
 if (!PHYS.includes(FAILINFO_OLD)) throw new Error('failInfo anchor not found');
 PHYS = PHYS.replace(FAILINFO_OLD, FAILINFO_NEW, 1);

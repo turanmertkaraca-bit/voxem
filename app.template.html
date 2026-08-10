@@ -704,8 +704,11 @@ function updateDiag() {
     : 'unlocked';
   const fl = recvState.frameLog;
   const ok = fl.length ? Math.round(100 * fl.reduce((a, b) => a + b, 0) / fl.length) : 0;
+  let extra = '';
+  const fi = recvState.failInfo;
+  if (fi) extra = ' | curve ' + (fi.curve || '-');
   $('diagLine').textContent = 'cam ' + cam + ' | ' + lock + ' | ' + ok + '% frames ok | last=' + recvState.lastFail +
-    ' | ' + (recvState.lastDecodeMs || 0).toFixed(0) + 'ms | luma ' + (recvState.lastLuma === null ? '-' : recvState.lastLuma.toFixed(0));
+    ' | ' + (recvState.lastDecodeMs || 0).toFixed(0) + 'ms' + extra;
 }
 
 function updateRecvHint(el) {

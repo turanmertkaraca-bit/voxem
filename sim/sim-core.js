@@ -253,13 +253,14 @@ var LumenSim = (function () {
     const noise = opts.noise || 0;
     const gain = opts.gain || 1;
     const tR = opts.tintR || 1, tG = opts.tintG || 1, tB = opts.tintB || 1;
+    const blackOffset = opts.blackOffset || 0; // AGC/lens-glare black lift
     const lut = noise ? noiseLut(noise) : null;
     const d = img.data;
     let ni = 0;
     for (let i = 0; i < d.length; i += 4) {
-      d[i]     = Math.min(255, Math.max(0, (d[i] + (lut ? lut[ni++ & 4095] : 0)) * gain * tR));
-      d[i + 1] = Math.min(255, Math.max(0, (d[i + 1] + (lut ? lut[ni++ & 4095] : 0)) * gain * tG));
-      d[i + 2] = Math.min(255, Math.max(0, (d[i + 2] + (lut ? lut[ni++ & 4095] : 0)) * gain * tB));
+      d[i]     = Math.min(255, Math.max(0, (d[i] + (lut ? lut[ni++] & 4095 : 0)) * gain * tR + blackOffset));
+      d[i + 1] = Math.min(255, Math.max(0, (d[i + 1] + (lut ? lut[ni++] & 4095 : 0)) * gain * tG + blackOffset));
+      d[i + 2] = Math.min(255, Math.max(0, (d[i + 2] + (lut ? lut[ni++] & 4095 : 0)) * gain * tB + blackOffset));
     }
     return img;
   }

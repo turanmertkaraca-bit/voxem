@@ -195,12 +195,14 @@ for (const row of S.sweep('blur', 0, 1.0, T3PTS, Object.assign({}, S.DEFAULTS, {
   };
   const N = QUICK ? 2 : 4;
   const cases = [
-    ['underexposed warm', { gain: 0.55, tintR: 1.25, tintB: 0.7 }],
-    ['dark noisy        ', { gain: 0.6, noise: 10 }],
+    ['underexposed warm', 168, 4, { gain: 0.55, tintR: 1.25, tintB: 0.7 }],
+    ['dark noisy        ', 168, 4, { gain: 0.6, noise: 10 }],
+    ['AGC lift (168 mild)', 168, 4, { gain: 1.05, blackOffset: 8, noise: 4 }],
+    ['AGC lift (96 heavy)', 96, 4, { gain: 1.6, blackOffset: 35, noise: 4 }],
   ];
   let allOk = true;
-  for (const [label, extra] of cases) {
-    const o = run(168, 4, extra, N);
+  for (const [label, grid, colors, extra] of cases) {
+    const o = run(grid, colors, extra, N);
     console.log('\nT7 ' + label + ': ' + o + '/' + N);
     if (o * 2 < N) allOk = false;
   }
