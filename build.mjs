@@ -533,6 +533,13 @@ const FAILINFO_NEW = `  state.lastFail = 'sampling';
   };`;
 if (!PHYS.includes(FAILINFO_OLD)) throw new Error('failInfo anchor not found');
 PHYS = PHYS.replace(FAILINFO_OLD, FAILINFO_NEW, 1);
+// voxem: live module-size meter — px per module in the CAMERA frame.
+// <4 px/module is unreadable; this drives the "move closer" guidance.
+const MODPX_OLD = `  const kx = img.w / small.w, ky = img.h / small.h;`;
+const MODPX_NEW = `  const kx = img.w / small.w, ky = img.h / small.h;
+  state.modulePx = markers ? (markers.markers[0].side * kx / MARKER) : state.modulePx;`;
+if (!PHYS.includes(MODPX_OLD)) throw new Error('modulePx anchor not found');
+PHYS = PHYS.replace(MODPX_OLD, MODPX_NEW, 1);
 
 /* ---------- assemble ---------- */
 const out = TPL

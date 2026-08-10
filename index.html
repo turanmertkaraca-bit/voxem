@@ -63,6 +63,14 @@
   .btn-ghost { background: rgba(255,255,255,0.065); color: var(--text); border-color: var(--glass-border); }
 
   #sendCanvasCard { display: none; flex: 1 1 auto; min-height: 0; flex-direction: column; align-items: center; justify-content: center; gap: 12px; text-align: center; animation: cardPop .45s var(--ease); }
+  /* streaming view = near-fullscreen grid (the camera needs ~4+ px per
+     module; a small card grid is unreadable at arm's length — this is the
+     single biggest real-world decode killer) */
+  #sendCanvasCard.streaming {
+    position: fixed; inset: 0; z-index: 60;
+    background: var(--bg0); border: 0; border-radius: 0;
+    justify-content: flex-start; padding: 10px;
+  }
   @keyframes cardPop { from { opacity: 0; transform: scale(.965) translateY(10px); } to { opacity: 1; transform: none; } }
   #sendCanvasCard::after {
     content: ""; position: absolute; inset: 0; z-index: 0; pointer-events: none; border-radius: var(--radius);
@@ -74,7 +82,15 @@
   }
   @keyframes aura { 0%,100% { opacity: .55; } 50% { opacity: 1; } }
   #sendCanvasCard > * { position: relative; z-index: 1; }
+  #sendCanvasCard.streaming::after { display: none; }
+  .stream-topbar { display: none; align-items: center; justify-content: space-between; gap: 10px; width: 100%; }
+  #sendCanvasCard.streaming .stream-topbar { display: flex; }
   .canvas-wrap { position: relative; flex: 0 0 auto; width: min(88vw, 480px, calc(100dvh - 300px)); aspect-ratio: 1 / 1; background: #fff; border-radius: 14px; overflow: hidden; line-height: 0; box-shadow: 0 0 0 1px rgba(0,0,0,0.25); }
+  #sendCanvasCard.streaming .canvas-wrap {
+    flex: 1 1 auto; width: auto; min-height: 0;
+    width: min(96vw, calc(96dvh - 110px));
+    max-width: 96vw;
+  }
   #sendCanvas { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); image-rendering: pixelated; image-rendering: crisp-edges; }
   .live-chip { display: inline-flex; align-items: center; background: rgba(255,255,255,0.06); border: 1px solid var(--glass-border); border-radius: 999px; padding: 6px 13px; font-size: 12px; color: var(--muted); }
   .live-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--accent-2); margin-right: 7px; box-shadow: 0 0 0 3px rgba(217,119,87,0.22); animation: pulse 1.1s ease infinite; }
@@ -157,8 +173,8 @@
             <option value="96,4,30">Tiny — 96/4 @30 (easiest to read)</option>
             <option value="128,4,30">Small — 128/4 @30</option>
             <option value="168,4,30">Reliable — 168/4 @30</option>
-            <option value="224,4,30">Balanced — 224/4 @30</option>
-            <option value="224,8,30">Fast — 224/8 @30</option>
+            <option value="128,8,30">Colorful — 128/8 @30</option>
+            <option value="224,8,30">Fast — 224/8 @30 (needs close-up)</option>
           </select>
         </div>
         <div>
@@ -195,12 +211,15 @@
       <div id="sendStatus"></div>
     </div>
     <div class="card" id="sendCanvasCard">
-      <div class="live-chip"><span class="live-dot"></span><span id="streamStatus">Streaming — point the receiving device at this screen</span></div>
+      <div class="stream-topbar">
+        <div class="live-chip"><span class="live-dot"></span><span id="streamStatus">Streaming — point the receiving device at this screen</span></div>
+        <div class="actions" style="margin:0;">
+          <button class="btn btn-ghost" id="maxBtn">Maximize</button>
+          <button class="btn btn-ghost" id="stopSendBtn2" disabled>Stop</button>
+        </div>
+      </div>
       <div class="canvas-wrap" id="canvasWrap">
         <canvas id="sendCanvas" width="10" height="10"></canvas>
-      </div>
-      <div class="actions">
-        <button class="btn btn-ghost" id="stopSendBtn2" disabled>Stop</button>
       </div>
       <div class="stats">
         <div class="stat"><div class="sv" id="stFrames">0</div><div class="sl">symbols sent</div></div>
@@ -1718,6 +1737,7 @@ function decodeFrame(img, state, deadline) {
   }
 
   const kx = img.w / small.w, ky = img.h / small.h;
+  state.modulePx = markers ? (markers.markers[0].side * kx / MARKER) : state.modulePx;
   const est = markers ? estimateGrid(markers.markers, kx) : null;
   // §1.2a format lock: once a stream is confirmed (lockCount > 0), only the
   // locked grid/palette are tried — a failing frame no longer exhausts all
@@ -2073,8 +2093,12 @@ async function startSending() {
   $('sendBtn').disabled = true;
   $('sendBtn').textContent = 'Streaming…';
   $('stopSendBtn').disabled = false; $('stopSendBtn2').disabled = false;
+  $('maxBtn').disabled = false;
   $('sendSetup').style.display = 'none';
   $('sendCanvasCard').style.display = 'flex';
+  $('sendCanvasCard').classList.add('streaming');
+  sizeCanvas();
+  setTimeout(() => { if (sendState.running) sizeCanvas(); }, 50);
 
   const raw = new Uint8Array(await file.arrayBuffer());
   if (sendState.cancelled) return;
@@ -2165,11 +2189,22 @@ function stopSending() {
   unlockScreen();
   sendState.cancelled = true;
   cancelAnimationFrame(sendState.raf);
+  if (document.fullscreenElement) { try { document.exitFullscreen(); } catch (e) {} }
   $('sendBtn').disabled = !sendState.file;
   $('sendBtn').textContent = 'Start streaming';
   $('stopSendBtn').disabled = true; $('stopSendBtn2').disabled = true;
+  $('maxBtn').disabled = true;
   $('sendSetup').style.display = '';
   $('sendCanvasCard').style.display = 'none';
+  $('sendCanvasCard').classList.remove('streaming');
+}
+
+function toggleFullscreen() {
+  if (document.fullscreenElement) { try { document.exitFullscreen(); } catch (e) {} return; }
+  const el = sendState.wrap;
+  if (el && el.requestFullscreen) {
+    el.requestFullscreen().catch(() => {});
+  }
 }
 
 /* ================= RECEIVER ================= */
@@ -2179,7 +2214,7 @@ const recvState = {
   decoder: null, meta: null, seen: new Set(), unique: 0,
   grid: null, colors: null, H: null, palHex: null, cal: null, _lutKey: null, _luts: null,
   cameraFps: 0, lockCount: 0, lastFail: 'none',
-  frameLog: [], lastDecodeMs: 0, lastLuma: null,
+  frameLog: [], lastDecodeMs: 0, lastLuma: null, modulePx: 0,
   t0: 0, lastUpdate: 0,
 };
 
@@ -2190,7 +2225,7 @@ function resetPool() {
   recvState.unique = 0;
   recvState.grid = null; recvState.colors = null; recvState.H = null;
   recvState.palHex = null; recvState.cal = null; recvState._lutKey = null; recvState._luts = null;
-  recvState.lockCount = 0;
+  recvState.lockCount = 0; recvState.modulePx = 0;
 }
 
 function stopReceiving() {
@@ -2350,14 +2385,21 @@ function updateDiag() {
   const fl = recvState.frameLog;
   const ok = fl.length ? Math.round(100 * fl.reduce((a, b) => a + b, 0) / fl.length) : 0;
   let extra = '';
+  if (recvState.modulePx) extra = ' | ' + recvState.modulePx.toFixed(1) + 'px/mod';
   const fi = recvState.failInfo;
-  if (fi) extra = ' | curve ' + (fi.curve || '-');
+  if (fi) extra += ' | curve ' + (fi.curve || '-');
   $('diagLine').textContent = 'cam ' + cam + ' | ' + lock + ' | ' + ok + '% frames ok | last=' + recvState.lastFail +
     ' | ' + (recvState.lastDecodeMs || 0).toFixed(0) + 'ms' + extra;
 }
 
 function updateRecvHint(el) {
   let parts = [];
+  const mp = recvState.modulePx;
+  if (mp !== undefined && mp > 0) {
+    if (mp < 3) parts.push('modules tiny (' + mp.toFixed(1) + ' px) — MOVE THE PHONE CLOSER so the grid fills the screen');
+    else if (mp < 4) parts.push('still small (' + mp.toFixed(1) + ' px/module) — closer, or use the Tiny 96 grid');
+    else if (recvState.lastFail === 'sampling') parts.push('close enough (' + mp.toFixed(1) + ' px/module) — tap the screen to focus, prop the phone steady');
+  }
   if (el > 3000 && recvState.unique > 0) {
     const ups = recvState.unique * 1000 / el;
     let rec = '10';
@@ -2376,8 +2418,6 @@ function updateRecvHint(el) {
         ? 'not seeing the code — center it, zoom out, prop the phone against something'
         : 'code found but unreadable — get closer, focus, clean the lens');
     }
-    // diagnostics: what failed, how often, how slow
-    parts.push(recvState.lastFail + ' ' + Math.round(pct * 100) + '%ok ' + (recvState.lastDecodeMs || 0).toFixed(0) + 'ms');
   }
   $('recvHint').textContent = parts.join(' · ');
 }
@@ -2458,7 +2498,7 @@ function newRecvState() {
   return {
     decoder: createLtDecoder(), meta: null, seen: new Set(), unique: 0,
     grid: null, colors: null, H: null, palHex: null, cal: null, _lutKey: null, _luts: null,
-    lockCount: 0, lastFail: 'none', frameLog: [], lastDecodeMs: 0,
+    lockCount: 0, lastFail: 'none', frameLog: [], lastDecodeMs: 0, modulePx: 0,
   };
 }
 
@@ -2592,10 +2632,12 @@ $('presetSel').onchange = (e) => {
 $('sendBtn').onclick = startSending;
 $('stopSendBtn').onclick = stopSending;
 $('stopSendBtn2').onclick = stopSending;
+$('maxBtn').onclick = toggleFullscreen;
 $('recvBtn').onclick = startReceiving;
 $('stopRecvBtn').onclick = stopReceiving;
 $('selftestBtn').onclick = runSelfTest;
 window.addEventListener('resize', () => { if (sendState.running) sizeCanvas(); });
+document.addEventListener('fullscreenchange', () => { if (sendState.running) sizeCanvas(); });
 
 /* debug hook for the browser test harness (window.__voxem) */
 window.__voxem = {

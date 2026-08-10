@@ -1461,6 +1461,7 @@ function decodeFrame(img, state, deadline) {
   }
 
   const kx = img.w / small.w, ky = img.h / small.h;
+  state.modulePx = markers ? (markers.markers[0].side * kx / MARKER) : state.modulePx;
   const est = markers ? estimateGrid(markers.markers, kx) : null;
   // §1.2a format lock: once a stream is confirmed (lockCount > 0), only the
   // locked grid/palette are tried — a failing frame no longer exhausts all
